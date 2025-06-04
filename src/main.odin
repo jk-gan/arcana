@@ -7,6 +7,10 @@ import "core:fmt"
 WINDOW_WIDTH  :: 1024
 WINDOW_HEIGHT :: 768
 
+App_Context :: struct {
+    running: bool
+}
+
 create_window :: proc() -> ^NS.Window {
     // Get main screen dimensions
     main_screen := NS.Screen_mainScreen()
@@ -65,36 +69,36 @@ create_window :: proc() -> ^NS.Window {
 
 handle_event :: proc(event: ^NS.Event) {
     event_type := NS.Event_type(event)
-    
+
     #partial switch event_type {
     case .KeyDown:
         key_code := NS.Event_keyCode(event)
         characters := NS.Event_characters(event)
         modifier_flags := NS.Event_modifierFlags(event)
-        
+
         // Convert NSString to Odin string for printing
         if characters != nil {
             char_str := characters->odinString()
-            fmt.printf("Key Down: code=%d, char='%s', modifiers=%v\n", 
+            fmt.printf("Key Down: code=%d, char='%s', modifiers=%v\n",
                       key_code, char_str, modifier_flags)
         }
-        
+
     case .KeyUp:
         key_code := NS.Event_keyCode(event)
         fmt.printf("Key Up: code=%d\n", key_code)
-        
+
     case .LeftMouseDown:
         location := NS.Event_locationInWindow(event)
         fmt.printf("Left Mouse Down at: %.2f, %.2f\n", location.x, location.y)
-        
+
     case .LeftMouseUp:
         location := NS.Event_locationInWindow(event)
         fmt.printf("Left Mouse Up at: %.2f, %.2f\n", location.x, location.y)
-        
+
     case .MouseMoved:
         location := NS.Event_locationInWindow(event)
         fmt.printf("Mouse Moved to: %.2f, %.2f\n", location.x, location.y)
-        
+
     case .ScrollWheel:
         delta_x, delta_y := NS.Event_scrollingDelta(event)
         if delta_x != 0 || delta_y != 0 {
@@ -111,46 +115,51 @@ main :: proc() {
     // Create main window
     window := create_window()
 
+    app_ctx := App_Context { running = true }
+
     // Show window
     NS.Window_makeKeyAndOrderFront(window, nil)
     NS.Application_activateIgnoringOtherApps(app, NS.YES)
 
     fmt.println("Window created successfully. Press ESC to exit.")
-    
+
     // Custom event loop to handle input
-    running := true
-    for running {
-        // Get the next event
-        event := NS.Application_nextEventMatchingMask(
-            app, 
-            NS.EventMaskAny,
-            NS.Date_distantFuture(),
-            NS.DefaultRunLoopMode,
-            NS.YES
-        )
-        
-        if event != nil {
-            event_type := NS.Event_type(event)
-            
-            // Check for ESC key to exit
-            if event_type == .KeyDown {
-                key_code := NS.Event_keyCode(event)
-                if key_code == u16(NS.kVK.Escape) {
-                    running = false
-                    continue
-                }
-            }
-            
-            // Handle the event
-            handle_event(event)
-            
-            // Send event to the application for default handling
-            NS.Application_sendEvent(app, event)
-        }
-        
-        // Update windows
-        NS.Application_updateWindows(app)
+    main_loop: for app_ctx.running {
+        process_event(app, &app_ctx)
+        render(app)
     }
-    
+
     fmt.println("Exiting...")
+}
+
+process_event :: proc(app: ^NS.Application, app_ctx: ^App_Context) {
+    event := NS.Application_nextEventMatchingMask(
+        app,
+        NS.EventMaskAny,
+        NS.Date_distantFuture(),
+        NS.DefaultRunLoopMode,
+        NS.YES
+    )
+
+    if event != nil {
+        event_type := NS.Event_type(event)
+
+        // Check for ESC key to exit
+        if event_type == .KeyDown {
+            key_code := NS.Event_keyCode(event)
+            if key_code == u16(NS.kVK.Escape) {
+                app_ctx.running = false
+            }
+        }
+
+        // Handle the event
+        handle_event(event)
+
+        // Send event to the application for default handling
+        NS.Application_sendEvent(app, event)
+    }
+}
+
+render :: proc(app: ^NS.Application) {
+    NS.Application_updateWindows(app)
 }
