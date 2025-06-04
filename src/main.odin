@@ -1,15 +1,27 @@
 package main
 
 import NS  "core:sys/darwin/Foundation"
+import CA  "vendor:darwin/QuartzCore"
 import "core:fmt"
+import "core:time"
+import "core:strings"
 
 // Window creation constants
 WINDOW_WIDTH  :: 1024
 WINDOW_HEIGHT :: 768
 
-App_Context :: struct {
-    running: bool
+// Application state
+App_State :: struct {
+    window:      ^NS.Window,
+    metal_layer: ^CA.MetalLayer,
+    renderer:    ^Metal_Renderer,
+    editor:      ^Editor,
+
+    running:     bool,
+    last_time:   time.Time,
 }
+
+g_app: App_State
 
 create_window :: proc() -> ^NS.Window {
     // Get main screen dimensions
@@ -64,10 +76,31 @@ create_window :: proc() -> ^NS.Window {
     content_view := NS.Window_contentView(window)
     NS.View_setWantsLayer(content_view, NS.YES)
 
+    // Create and configure Metal layer
+    metal_layer := CA.MetalLayer_layer()
+    CA.MetalLayer_setPixelFormat(metal_layer, .BGRA8Unorm)
+
+    // Set drawable size based on view bounds
+    bounds := NS.View_bounds(content_view)
+    scale := NS.Window_backingScaleFactor(window)
+    drawable_size := NS.Size{
+        width = bounds.size.width * scale,
+        height = bounds.size.height * scale,
+    }
+    CA.MetalLayer_setDrawableSize(metal_layer, drawable_size)
+    CA.MetalLayer_setFrame(metal_layer, bounds)
+
+    // Set the Metal layer as the view's layer
+    NS.View_setLayer(content_view, cast(^NS.Layer)metal_layer)
+
+    g_app.metal_layer = metal_layer
+
     return window
 }
 
 handle_event :: proc(event: ^NS.Event) {
+    if g_app.editor == nil do return
+
     event_type := NS.Event_type(event)
 
     #partial switch event_type {
@@ -76,35 +109,76 @@ handle_event :: proc(event: ^NS.Event) {
         characters := NS.Event_characters(event)
         modifier_flags := NS.Event_modifierFlags(event)
 
-        // Convert NSString to Odin string for printing
-        if characters != nil {
-            char_str := characters->odinString()
-            fmt.printf("Key Down: code=%d, char='%s', modifiers=%v\n",
-                      key_code, char_str, modifier_flags)
+        // Handle special keys
+        switch key_code {
+        case u16(NS.kVK.LeftArrow):
+            editor_move_cursor(g_app.editor, 0, .Left, false)
+        case u16(NS.kVK.RightArrow):
+            editor_move_cursor(g_app.editor, 0, .Right, false)
+        case u16(NS.kVK.UpArrow):
+            editor_move_cursor(g_app.editor, 0, .Up, false)
+        case u16(NS.kVK.DownArrow):
+            editor_move_cursor(g_app.editor, 0, .Down, false)
+        case u16(NS.kVK.Delete):
+            editor_delete_char(g_app.editor, false)
+        case u16(NS.kVK.Return):
+            editor_insert_text(g_app.editor, "\n")
+        case:
+            // Insert regular characters
+            if characters != nil {
+                char_str := characters->odinString()
+                if len(char_str) > 0 && char_str[0] >= 32 {  // Printable characters
+                    editor_insert_text(g_app.editor, char_str)
+                }
+            }
         }
 
-    case .KeyUp:
-        key_code := NS.Event_keyCode(event)
-        fmt.printf("Key Up: code=%d\n", key_code)
-
-    case .LeftMouseDown:
-        location := NS.Event_locationInWindow(event)
-        fmt.printf("Left Mouse Down at: %.2f, %.2f\n", location.x, location.y)
-
-    case .LeftMouseUp:
-        location := NS.Event_locationInWindow(event)
-        fmt.printf("Left Mouse Up at: %.2f, %.2f\n", location.x, location.y)
-
-    case .MouseMoved:
-        location := NS.Event_locationInWindow(event)
-        fmt.printf("Mouse Moved to: %.2f, %.2f\n", location.x, location.y)
+        editor_scroll_to_cursor(g_app.editor)
 
     case .ScrollWheel:
         delta_x, delta_y := NS.Event_scrollingDelta(event)
-        if delta_x != 0 || delta_y != 0 {
-            fmt.printf("Scroll: dx=%.2f, dy=%.2f\n", delta_x, delta_y)
+        g_app.editor.target_scroll.x -= f32(delta_x) * 10
+        g_app.editor.target_scroll.y -= f32(delta_y) * 10
+    }
+}
+
+render_frame :: proc() {
+    if g_app.renderer == nil || g_app.editor == nil do return
+
+    dt := time.duration_seconds(time.since(g_app.last_time))
+    g_app.last_time = time.now()
+
+    // Update editor state
+    editor_update_scroll(g_app.editor, f32(dt))
+
+    // Begin rendering
+    renderer_begin_frame(g_app.renderer)
+
+    // Draw editor content
+    start_line, end_line := editor_get_visible_lines(g_app.editor)
+
+    y := -g_app.editor.scroll.y
+    for line := start_line; line < end_line; line += 1 {
+        line_text := buffer_get_line(g_app.editor.buffer, line)
+        renderer_draw_text(g_app.renderer, line_text, -g_app.editor.scroll.x, y, {1, 1, 1, 1})
+        y += g_app.editor.line_height
+    }
+
+    // Draw cursor
+    if len(g_app.editor.cursors) > 0 {
+        cursor := g_app.editor.cursors[0]
+        line, col := buffer_pos_to_line_col(g_app.editor.buffer, cursor.pos)
+        cursor_x := f32(col) * g_app.editor.char_width - g_app.editor.scroll.x
+        cursor_y := f32(line) * g_app.editor.line_height - g_app.editor.scroll.y
+
+        // Blinking cursor
+        if int(time.duration_seconds(time.since(g_app.last_time)) * 2) % 2 == 0 {
+            renderer_draw_rect(g_app.renderer, cursor_x, cursor_y, 2, g_app.editor.line_height, {1, 1, 1, 1})
         }
     }
+
+    // End rendering
+    renderer_end_frame(g_app.renderer, f32(WINDOW_WIDTH), f32(WINDOW_HEIGHT))
 }
 
 main :: proc() {
@@ -113,30 +187,41 @@ main :: proc() {
     NS.Application_setActivationPolicy(app, NS.ActivationPolicy.Regular)
 
     // Create main window
-    window := create_window()
-
-    app_ctx := App_Context { running = true }
+    g_app.window = create_window()
 
     // Show window
-    NS.Window_makeKeyAndOrderFront(window, nil)
+    NS.Window_makeKeyAndOrderFront(g_app.window, nil)
     NS.Application_activateIgnoringOtherApps(app, NS.YES)
 
-    fmt.println("Window created successfully. Press ESC to exit.")
+    // Initialize renderer
+    g_app.renderer = renderer_init(g_app.metal_layer)
 
-    // Custom event loop to handle input
-    main_loop: for app_ctx.running {
-        process_event(app, &app_ctx)
-        render(app)
+    // Create initial buffer and editor
+    buffer := buffer_from_string("Welcome to Arcana Editor!\n\nStart typing to edit...\n")
+    g_app.editor = editor_new(buffer)
+    g_app.editor.viewport = {0, 0, WINDOW_WIDTH, WINDOW_HEIGHT}
+
+    fmt.println("Arcana Editor started. Press ESC to exit.")
+
+    // Initialize timing
+    g_app.last_time = time.now()
+    g_app.running = true
+
+    // Custom event loop
+    main_loop: for g_app.running {
+        process_event(app)
+        render_frame()
     }
 
     fmt.println("Exiting...")
 }
 
-process_event :: proc(app: ^NS.Application, app_ctx: ^App_Context) {
+process_event :: proc(app: ^NS.Application) {
+    // Poll with timeout for ~60 FPS
     event := NS.Application_nextEventMatchingMask(
         app,
         NS.EventMaskAny,
-        NS.Date_distantFuture(),
+        NS.Date_dateWithTimeIntervalSinceNow(0.016),
         NS.DefaultRunLoopMode,
         NS.YES
     )
@@ -148,7 +233,7 @@ process_event :: proc(app: ^NS.Application, app_ctx: ^App_Context) {
         if event_type == .KeyDown {
             key_code := NS.Event_keyCode(event)
             if key_code == u16(NS.kVK.Escape) {
-                app_ctx.running = false
+                g_app.running = false
             }
         }
 
@@ -158,8 +243,4 @@ process_event :: proc(app: ^NS.Application, app_ctx: ^App_Context) {
         // Send event to the application for default handling
         NS.Application_sendEvent(app, event)
     }
-}
-
-render :: proc(app: ^NS.Application) {
-    NS.Application_updateWindows(app)
 }
