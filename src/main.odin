@@ -13,6 +13,7 @@ App_Config :: struct {}
 App_State :: struct {
     window:      ^NS.Window,
     metal_layer: ^CA.MetalLayer,
+    renderer:    ^Renderer,
     running:     bool,
 }
 
@@ -21,7 +22,7 @@ app_state: App_State
 create_window :: proc() -> ^NS.Window {
     // Get main screen dimensions
     main_screen := NS.Screen_mainScreen()
-    screen_frame := NS.Screen_frame(main_screen)
+    screen_frame := main_screen->frame()
 
     // Calculate centered window position
     window_width  := NS.Float(WINDOW_WIDTH)
@@ -43,47 +44,42 @@ create_window :: proc() -> ^NS.Window {
                 NS.WindowStyleMaskFullSizeContentView
 
     // Create window
-    window := NS.Window_alloc()
-    window = NS.Window_initWithContentRect(
-        window,
+    window := NS.Window.alloc()->initWithContentRect(
         content_rect,
         style_mask,
         NS.BackingStoreType.Buffered,
-        NS.NO
+        false
     )
 
     // Set window properties
     title := NS.String.alloc()->initWithOdinString("Arcana Editor")
-    NS.Window_setTitle(window, title)
+    window->setTitle(title)
 
     // Make title bar transparent and hide the title
-    NS.Window_setTitlebarAppearsTransparent(window, NS.YES)
-    NS.Window_setTitleVisibility(window, NS.Window_Title_Visibility.Hidden)
+    window->setTitlebarAppearsTransparent(true)
+    window->setTitleVisibility(NS.Window_Title_Visibility.Hidden)
 
     // Set window appearance
-    NS.Window_setOpaque(window, NS.YES)
-
-    // Set background color (dark gray)
-    bg_color := NS.Color_colorWithSRGBRed(0.15, 0.15, 0.15, 1.0)
-    NS.Window_setBackgroundColor(window, bg_color)
+    window->setOpaque(true)
+    window->setBackgroundColor(nil)
 
     // Get the content view and enable layer backing
-    content_view := NS.Window_contentView(window)
-    NS.View_setWantsLayer(content_view, NS.YES)
+    content_view := window->contentView()
+    // NS.View_setWantsLayer(content_view, NS.YES)
 
     metal_layer := CA.MetalLayer_layer()
-    CA.MetalLayer_setPixelFormat(metal_layer, .BGRA8Unorm)
+    metal_layer->setPixelFormat(.BGRA8Unorm)
 
-    bounds := NS.View_bounds(content_view)
-    scale := NS.Window_backingScaleFactor(window)
+    bounds := content_view->bounds()
+    scale := window->backingScaleFactor()
     drawable_size := NS.Size {
         width = bounds.size.width * scale,
         height = bounds.size.height * scale,
     }
-    CA.MetalLayer_setDrawableSize(metal_layer, drawable_size)
-    CA.MetalLayer_setFrame(metal_layer, bounds)
+    metal_layer->setDrawableSize(drawable_size)
+    // metal_layer->setFrame(bounds)
 
-    NS.View_setLayer(content_view, cast(^NS.Layer)metal_layer)
+    content_view->setLayer(metal_layer)
 
     app_state.metal_layer = metal_layer
 
@@ -152,6 +148,12 @@ main :: proc() {
 
     fmt.println("Window created successfully. Press ESC to exit.")
 
+    app_state.renderer = new(Renderer)
+    defer free(app_state.renderer)
+    if !renderer_init(app_state.renderer, app_state.metal_layer) {
+        fmt.panicf("Failed to initialize renderer")
+    }
+
     app_state.running = true
     main_loop: for app_state.running {
         process_event(app)
@@ -190,5 +192,6 @@ process_event :: proc(app: ^NS.Application) {
 }
 
 render :: proc(app: ^NS.Application) {
+    renderer_draw_frame(app_state.renderer, app_state.metal_layer)
     NS.Application_updateWindows(app)
 }
