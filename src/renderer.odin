@@ -4,6 +4,7 @@ import "core:fmt"
 
 import MTL "vendor:darwin/Metal"
 import CA "vendor:darwin/QuartzCore"
+import NS "core:sys/darwin/Foundation"
 
 Renderer :: struct {
     device:          ^MTL.Device,
@@ -38,11 +39,58 @@ renderer_init :: proc(r: ^Renderer, metal_layer: ^CA.MetalLayer) -> bool {
         return false
     }
 
-    // r.library = r.device->newDefaultLibrary()
-    // if r.library == nil {
-    //     fmt.eprintln("Failed to create Metal library")
-    //     return false
-    // }
+    r.library = r.device->newDefaultLibrary()
+    if r.library == nil {
+        fmt.eprintln("Failed to create Metal library. Make sure default.metallib is in the executable directory.")
+        return false
+    }
+
+    vertex_fn := r.library->newFunctionWithName(NS.String.alloc()->initWithOdinString("vertex_main"))
+    if vertex_fn == nil {
+        fmt.eprintln("Failed to find vertex shader function")
+        return false
+    }
+    defer vertex_fn->release()
+
+    fragment_fn := r.library->newFunctionWithName(NS.String.alloc()->initWithOdinString("fragment_main"))
+    if fragment_fn == nil {
+        fmt.eprintln("Failed to find fragment shader function")
+        return false
+    }
+    defer fragment_fn->release()
+
+    pipeline_descriptor := MTL.RenderPipelineDescriptor.alloc()->init()
+    defer pipeline_descriptor->release()
+
+    pipeline_descriptor->setVertexFunction(vertex_fn)
+    pipeline_descriptor->setFragmentFunction(fragment_fn)
+    pipeline_descriptor->colorAttachments()->object(0)->setPixelFormat(metal_layer->pixelFormat())
+
+    err: ^NS.Error
+    pipeline_state: ^MTL.RenderPipelineState
+    pipeline_state, err = r.device->newRenderPipelineStateWithDescriptor(pipeline_descriptor)
+    if err != nil {
+        fmt.eprintf("Failed to create render pipeline state: %v\n", err)
+        return false
+    }
+    r.render_pipeline = pipeline_state
+
+    triangle_vertices := [?]f32{
+         0.0,  0.5,
+        -0.5, -0.5,
+         0.5, -0.5,
+    }
+
+    vertex_data_bytes := ([^]u8)(&triangle_vertices[0])[:size_of(triangle_vertices)]
+
+    r.vertex_buffer = r.device->newBufferWithBytes(
+        vertex_data_bytes,
+        {},
+    )
+    if r.vertex_buffer == nil {
+        fmt.eprintln("Failed to create vertex buffer")
+        return false
+    }
 
     return true
 }
@@ -69,6 +117,10 @@ renderer_draw_frame :: proc(r: ^Renderer, metal_layer: ^CA.MetalLayer) {
 
     render_encoder := command_buffer->renderCommandEncoderWithDescriptor(pass)
     defer render_encoder->release()
+
+    render_encoder->setRenderPipelineState(r.render_pipeline)
+    render_encoder->setVertexBuffer(r.vertex_buffer, 0, 0)
+    render_encoder->drawPrimitives(.Triangle, 0, 3)
 
     render_encoder->endEncoding()
 
