@@ -66,9 +66,7 @@ renderer_init :: proc(r: ^Renderer, metal_layer: ^CA.MetalLayer) -> bool {
     pipeline_descriptor->setFragmentFunction(fragment_fn)
     pipeline_descriptor->colorAttachments()->object(0)->setPixelFormat(metal_layer->pixelFormat())
 
-    err: ^NS.Error
-    pipeline_state: ^MTL.RenderPipelineState
-    pipeline_state, err = r.device->newRenderPipelineStateWithDescriptor(pipeline_descriptor)
+    pipeline_state, err := r.device->newRenderPipelineStateWithDescriptor(pipeline_descriptor)
     if err != nil {
         fmt.eprintf("Failed to create render pipeline state: %v\n", err)
         return false
